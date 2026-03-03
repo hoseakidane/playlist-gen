@@ -1,14 +1,13 @@
 import json
+import braintrust
 from openai import OpenAI
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
 load_dotenv()
 
-#TODO instrument this code with tracing. You'll want to wrap the LLM client to gain model iputs/outputs and metrics and also trace the various functions and tools called by the agent
-#HINT: Don't forget to initialize a Braintrust logger
-
-client = OpenAI()
+logger = braintrust.init_logger(project="PlaylistGenerator")
+client = braintrust.wrap_openai(OpenAI())
 
 class Song(BaseModel):
     title: str
@@ -139,6 +138,7 @@ TOOLS = [
 ]
 
 
+@braintrust.traced(type="tool")
 def search_songs(genre: str = None, mood: str = None) -> list[dict]:
     """Search the catalog by genre and/or mood."""
     results = MUSIC_CATALOG
@@ -149,6 +149,7 @@ def search_songs(genre: str = None, mood: str = None) -> list[dict]:
     return [{"id": s["id"], "title": s["title"], "artist": s["artist"]} for s in results]
 
 
+@braintrust.traced(type="tool")
 def get_song_details(song_id: str) -> dict | None:
     """Get full details for a song by ID."""
     for song in MUSIC_CATALOG:
@@ -157,6 +158,7 @@ def get_song_details(song_id: str) -> dict | None:
     return None
 
 
+@braintrust.traced(type="tool")
 def create_playlist(name: str, song_ids: list[str]) -> dict:
     """Create a playlist with the given songs."""
     songs = []
@@ -189,26 +191,29 @@ def handle_tool_call(tool_name: str, arguments: dict) -> str:
     return json.dumps(result)
 
 
-def run_agent(user_request: str) -> AgentResult:
+DEFAULT_SYSTEM_PROMPT = "You are a helpful music assistant that creates playlists. Use the available tools to search for songs and create playlists based on user requests. Always search for songs first, then create a playlist with your selections."
+DEFAULT_MODEL = "gpt-4o-mini"
+
+@braintrust.traced
+def run_agent(user_request: str, model: str = None, system_prompt: str = None) -> AgentResult:
     """Run the playlist agent with the given user request."""
+    model = model or DEFAULT_MODEL
+    system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+
     print(f"\n{'='*50}")
     print(f"User Request: {user_request}")
     print('='*50)
 
     result = AgentResult()
 
-#TODO You may want to show how you can tweak this prompt as you improve your application. Making the prompt parameterizable would also allow you to run remote evals from the UI
     messages = [
-        {
-            "role": "system",
-            "content": "You are a helpful music assistant that creates playlists. Use the available tools to search for songs and create playlists based on user requests. Always search for songs first, then create a playlist with your selections.",
-        },
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_request},
     ]
 
     while True:
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model,
             messages=messages,
             tools=TOOLS,
         )
